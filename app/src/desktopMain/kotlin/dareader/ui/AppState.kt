@@ -42,7 +42,9 @@ data class TrustPrompt(
 sealed interface Screen {
     data object Setup : Screen
     data object Library : Screen
+    data object History : Screen
     data object Store : Screen
+    data object More : Screen
     data class Browse(val sources: List<Source>) : Screen
     data class Detail(val source: Source, val sources: List<Source>, val manga: SManga) : Screen
     data class Reader(val source: Source, val sources: List<Source>, val manga: SManga, val chapter: SChapter) : Screen
@@ -57,7 +59,7 @@ fun defaultDataDir(): Path {
     return base.resolve("dareader")
 }
 
-class AppState(dataDir: Path = defaultDataDir()) {
+class AppState(val dataDir: Path = defaultDataDir()) {
     var screen: Screen by mutableStateOf(Screen.Setup)
     var status: String by mutableStateOf("pick an extension APK to load")
 
@@ -80,6 +82,14 @@ class AppState(dataDir: Path = defaultDataDir()) {
     private val loadLock = Any()
     private var loaded: LoadedExtension? = null
     private var loadedJar: Path? = null
+
+    /**
+     * Sources of the single-shot (uninstalled) extension currently open, if
+     * any. Mirrors [loaded] so the shell can offer Browse/unload without
+     * reaching into the load lock from composition.
+     */
+    var transientSources: List<Source> by mutableStateOf(emptyList())
+        private set
 
     val library = LibraryStore(dataDir)
 
@@ -105,6 +115,11 @@ class AppState(dataDir: Path = defaultDataDir()) {
             false
         }
     }
+
+    /** Every source the shell can browse: installed extensions plus the loaded one. */
+    val availableSources: List<Source>
+        get() = (extensions.installed.value.flatMap { it.sources } + transientSources)
+            .distinctBy { it.id }
 
     fun answerTrust(approve: Boolean) {
         val future = synchronized(trustLock) {
@@ -141,6 +156,7 @@ class AppState(dataDir: Path = defaultDataDir()) {
             loaded = ext
             loadedJar = jar
         }
+        transientSources = ext.sources
         if (old != null) runCatching { old.close() }
         if (oldJar != null) runCatching { Files.deleteIfExists(oldJar) }
     }
@@ -154,6 +170,7 @@ class AppState(dataDir: Path = defaultDataDir()) {
             loaded = null
             loadedJar = null
         }
+        transientSources = emptyList()
         if (old != null) runCatching { old.close() }
         if (oldJar != null) runCatching { Files.deleteIfExists(oldJar) }
     }

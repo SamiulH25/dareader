@@ -1,14 +1,18 @@
 package dareader.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
@@ -16,8 +20,10 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -27,13 +33,15 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dareader.ext.store.NetworkExtensionStore
-import kotlinx.coroutines.Dispatchers
 import dareader.ext.store.RepoEntry
 import dareader.ext.store.defaultHttpClient
 import dareader.ext.store.fetchRepos
 import dareader.ext.store.fetchStore
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicInteger
@@ -103,11 +111,11 @@ fun StoreScreen(state: AppState) {
         if (index != null) loadStore(index) else loadRepos()
     }
 
-    Column(Modifier.fillMaxSize().padding(12.dp)) {
-        Text("Extension store", style = MaterialTheme.typography.titleMedium)
+    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        ScreenTitle("Store", extensions?.let { "${it.size} extensions" })
         Text(
-            "Find extensions to install. Installed ones appear under Extensions.",
-            style = MaterialTheme.typography.bodySmall,
+            "Repositories list store indexes; an index lists installable extensions. Installs go through the trust gate.",
+            style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         OutlinedTextField(
@@ -116,18 +124,20 @@ fun StoreScreen(state: AppState) {
             Modifier.fillMaxWidth(),
             label = { Text("Repo or store address") },
             singleLine = true,
+            shape = MaterialTheme.shapes.large,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button({ loadRepos() }, enabled = !loading) { Text("Load repos") }
-            Button({ loadStore(url.trim()) }, enabled = !loading) { Text("Load store") }
-        }
         OutlinedTextField(
             packageFilter,
             { packageFilter = it },
             Modifier.fillMaxWidth(),
             label = { Text("Package filter (optional)") },
             singleLine = true,
+            shape = MaterialTheme.shapes.large,
         )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button({ loadRepos() }, enabled = !loading) { Text("Load repos") }
+            OutlinedButton({ loadStore(url.trim()) }, enabled = !loading) { Text("Load store") }
+        }
         if (loading && extensions == null && repos == null) {
             Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
@@ -135,41 +145,57 @@ fun StoreScreen(state: AppState) {
         }
         error?.let { message ->
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                Button({ retry() }, enabled = !loading) { Text("Retry") }
+                Text(
+                    message,
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                OutlinedButton({ retry() }, enabled = !loading) { Text("Retry") }
             }
         }
         val repoList = repos
         if (repoList != null) {
             Text("Repos (${repoList.size})", style = MaterialTheme.typography.titleSmall)
-            LazyColumn(Modifier.fillMaxWidth().weight(0.35f, fill = false), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            LazyColumn(
+                Modifier.fillMaxWidth().heightIn(max = 160.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
                 items(repoList, key = { it.url.ifBlank { it.name } }) { repo ->
                     Text(
                         repo.name.ifBlank { repo.url },
-                        Modifier.fillMaxWidth().clickable {
-                            if (repo.url.isNotBlank()) {
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(MaterialTheme.shapes.medium)
+                            .clickable(enabled = repo.url.isNotBlank()) {
                                 url = repo.url
                                 loadStore(repo.url)
                             }
-                        }.padding(6.dp),
+                            .background(MaterialTheme.colorScheme.surfaceContainer)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
                         style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
-            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
         val list = extensions
         if (list != null) {
-            Text(
-                "Extensions (${list.size})",
-                style = MaterialTheme.typography.titleSmall,
-            )
-            lastIndexUrl?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Extensions (${list.size})", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.width(12.dp))
+                lastIndexUrl?.let {
+                    Text(
+                        it,
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 items(list, key = { it.packageName }) { ext ->
@@ -185,15 +211,8 @@ fun StoreScreen(state: AppState) {
                 }
             }
         } else if (!loading && repos == null && error == null) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "Load a repo list or a store index to browse extensions.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button({ loadRepos() }) { Text("Load default repos") }
-                }
+            EmptyNotice("Load a repo list or a store index to browse extensions.") {
+                Button({ loadRepos() }) { Text("Load default repos") }
             }
         }
     }
@@ -206,24 +225,37 @@ private fun StoreExtensionRow(
     onInstall: () -> Unit,
     onUninstall: () -> Unit,
 ) {
-    Row(Modifier.fillMaxWidth().padding(6.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        ExtensionIcon(ext.resources.iconUrl.ifBlank { null }, Modifier.size(48.dp), fallbackText = ext.name.take(1).uppercase())
-        Column(Modifier.weight(1f).align(Alignment.CenterVertically)) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ExtensionIcon(
+            ext.resources.iconUrl.ifBlank { null },
+            Modifier.size(44.dp),
+            fallbackText = ext.name.take(1).uppercase(),
+        )
+        Column(Modifier.weight(1f)) {
             Text(ext.name, style = MaterialTheme.typography.titleSmall)
             Text(
                 "${ext.packageName} · v${ext.versionName} (${ext.versionCode})",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             if (ext.sources.isNotEmpty()) {
                 Text(
                     ext.sources.joinToString { "${it.name} (${it.language})" }.take(200),
                     style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
         if (installed) {
-            Button({ onUninstall() }) { Text("Uninstall") }
+            OutlinedButton({ onUninstall() }) { Text("Uninstall") }
         } else {
             Button({ onInstall() }) { Text("Install") }
         }

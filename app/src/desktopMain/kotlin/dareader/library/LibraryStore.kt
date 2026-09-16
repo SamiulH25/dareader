@@ -76,6 +76,10 @@ class LibraryStore(dataDir: Path) {
     private val _history = MutableStateFlow<List<HistoryEntry>>(emptyList())
     val history: StateFlow<List<HistoryEntry>> = _history.asStateFlow()
 
+    /** Chapters marked read per manga url; drives the library grid badges. */
+    private val _readCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val readCounts: StateFlow<Map<String, Int>> = _readCounts.asStateFlow()
+
     init {
         lock.withLock {
             runCatching { Files.createDirectories(dir) }
@@ -106,6 +110,7 @@ class LibraryStore(dataDir: Path) {
             val key = mangaUrl to chapterUrl
             chapters[key] = (chapters[key] ?: ChapterState()).copy(read = read)
             persistProgress()
+            recomputeReadCounts()
         }
     }
 
@@ -193,6 +198,14 @@ class LibraryStore(dataDir: Path) {
             }.getOrNull() ?: return@forEach
             chapters[parsed.first to parsed.second] = parsed.third
         }
+        recomputeReadCounts()
+    }
+
+    private fun recomputeReadCounts() {
+        _readCounts.value = chapters.entries
+            .filter { it.value.read }
+            .groupingBy { it.key.first }
+            .eachCount()
     }
 
     // -- persistence (atomic tmp+move, never throws; call with lock held) --
