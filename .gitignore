@@ -1,0 +1,31 @@
+# Gradle
+.gradle/
+build/
+**/build/
+out/
+
+# Kotlin
+.kotlin/
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.DS_Store
+
+# Local config
+local.properties
+gradle.properties.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+*.hprof

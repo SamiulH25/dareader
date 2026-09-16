@@ -1,0 +1,50 @@
+[versions]
+kotlin = "2.4.10"
+coroutines = "1.11.0"
+serialization = "1.11.0"
+okhttpV = "5.5.0"
+jsoupV = "1.23.2"
+dex2jarV = "2.4.38"
+apkParserV = "2.6.10"
+asmV = "9.9.1"
+apksigV = "9.4.0"
+rxjavaV = "1.3.8"
+kotlinLoggingV = "8.0.4"
+okioV = "3.18.1"
+jsonOkioV = "1.11.0"
+natsortV = "natural-comparator-1.1"
+slf4jV = "2.0.18"
+asmTreeV = "9.9.1"
+logbackV = "1.6.3"
+rhinoV = "1.8.0"
+composeV = "1.9.3"
+
+[libraries]
+okhttp-core = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttpV" }
+okhttp-brotli = { module = "com.squareup.okhttp3:okhttp-brotli", version.ref = "okhttpV" }
+okhttp-zstd = { module = "com.squareup.okhttp3:okhttp-zstd", version.ref = "okhttpV" }
+jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoupV" }
+coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+serialization-protobuf = { module = "org.jetbrains.kotlinx:kotlinx-serialization-protobuf", version.ref = "serialization" }
+dex-translator = { module = "de.femtopedia.dex2jar:dex-translator", version.ref = "dex2jarV" }
+dex-tools = { module = "de.femtopedia.dex2jar:dex-tools", version.ref = "dex2jarV" }
+asm = { module = "org.ow2.asm:asm", version.ref = "asmV" }
+apksig = { module = "com.android.tools.build:apksig", version.ref = "apksigV" }
+apk-parser = { module = "net.dongliu:apk-parser", version.ref = "apkParserV" }
+rxjava = { module = "io.reactivex:rxjava", version.ref = "rxjavaV" }
+kotlin-logging = { module = "io.github.oshai:kotlin-logging-jvm", version.ref = "kotlinLoggingV" }
+logging-interceptor = { module = "com.squareup.okhttp3:logging-interceptor", version.ref = "okhttpV" }
+okio = { module = "com.squareup.okio:okio", version.ref = "okioV" }
+serialization-json-okio = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json-okio", version.ref = "jsonOkioV" }
+natsort = { module = "com.github.gpanther:java-nat-sort", version.ref = "natsortV" }
+slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4jV" }
+logback = { module = "ch.qos.logback:logback-classic", version.ref = "logbackV" }
+asm-tree = { module = "org.ow2.asm:asm-tree", version.ref = "asmTreeV" }
+rhino = { module = "org.mozilla:rhino", version.ref = "rhinoV" }
+
+
+[plugins]
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+compose = { id = "org.jetbrains.compose", version.ref = "composeV" }

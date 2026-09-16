@@ -1,0 +1,17 @@
+# Vendored upstream sources (do not hand-edit; port updates as a batch)
+
+Upstream: https://github.com/Suwayomi/Suwayomi-Server @ d37230e (master)
+License: MPL-2.0 (same as upstream; dareader's own code is separate).
+
+- `eu/kanade/tachiyomi/source/**` (Source API + models + HttpSource)
+- `eu/kanade/tachiyomi/network/**` (NetworkHelper, cookies, interceptors)
+- `eu/kanade/tachiyomi/util/{JsoupExtensions,lang/*}`
+
+
+`dareader/ext/**` is dareader-original and stays clean-room.
+ADAPTED (dareader, 2026-09-15): source/model/Filter.kt nested classes
+Select/Text/CheckBox/TriState/Group/Sort are `open`, not upstream's
+`abstract`. 1.4-era extension bytecode instantiates them directly
+(`new Filter$Text` in generated filter factories); abstract breaks linkage
+with InstantiationError. Open is strictly more permissive at runtime and
+remains source-compatible for 1.6 extensions that subclass them.
