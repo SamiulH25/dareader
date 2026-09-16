@@ -1,19 +1,27 @@
 package dareader.ext.manager
 
+import dareader.ext.ExtensionContract
 import dareader.ext.load.LoadedExtension
 import dareader.ext.load.dexToJar
+import dareader.ext.load.findExtensionEntryClass
 import dareader.ext.load.loadExtensionSources
 import dareader.ext.pkg.downloadApk
 import dareader.ext.pkg.parseApkManifest
+import dareader.ext.pkg.requireAccepted
 import dareader.ext.store.downloadJar
 import dareader.ext.trust.apkCertificateHashes
 import dareader.ext.trust.isTrusted
+import dareader.ext.trust.isTrustedArtifact
 import dareader.ext.trust.pin
+import dareader.ext.trust.pinArtifact
 import eu.kanade.tachiyomi.source.Source
+import eu.kanade.tachiyomi.util.lang.Hash
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -22,6 +30,7 @@ import suwayomi.tachidesk.manga.impl.util.source.GetSource
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.util.concurrent.ConcurrentHashMap
 
 data class Installed(
     val pkg: String,
@@ -32,8 +41,21 @@ data class Installed(
     val iconUrl: String? = null,
 )
 
+/**
+ * Pending trust decision handed to [ExtensionManager]'s prompt callback. APK
+ * installs carry [certHashes]; jar installs (no signing certificate) carry
+ * [artifactSha256] instead.
+ */
+data class TrustRequest(
+    val pkg: String,
+    val versionCode: Long,
+    val certHashes: List<String> = emptyList(),
+    val artifactSha256: String? = null,
+    val storeKey: String = "",
+)
+
 @Serializable
-private data class StagedMeta(
+internal data class StagedMeta(
     val pkg: String,
     val mainClass: String,
     val versionName: String,
@@ -55,10 +77,14 @@ private val metaJson = Json { ignoreUnknownKeys = true; prettyPrint = false }
 class ExtensionManager(
     private val dataDir: Path,
     private val client: OkHttpClient,
-    private val onTrustRequest: (pkg: String, versionCode: Long, certHashes: List<String>, storeKey: String) -> Boolean,
+    private val onTrustRequest: (TrustRequest) -> Boolean,
 ) {
     private val extRoot: Path = dataDir.resolve("extensions")
     private val lock = Any()
+    private val pkgLocks = ConcurrentHashMap<String, Mutex>()
+
+    /** Serializes staged mutations (install vs uninstall) for one package. */
+    private fun pkgLock(pkg: String): Mutex = pkgLocks.computeIfAbsent(pkg) { Mutex() }
     private val loaded = mutableMapOf<String, LoadedExtension>()
     private val metas = mutableMapOf<String, StagedMeta>()
     private val _installed = MutableStateFlow<List<Installed>>(emptyList())
@@ -66,11 +92,10 @@ class ExtensionManager(
 
     init {
         runCatching { Files.createDirectories(extRoot) }
-        rescan()
     }
 
-    /** Reloads every staged package; per-pkg failures are skipped, never thrown. */
-    private fun rescan() {
+    /** Reloads staged packages that are not already loaded; per-pkg failures are skipped, never thrown. */
+    suspend fun rescan() = withContext(Dispatchers.IO) {
         val dirs = runCatching {
             Files.list(extRoot).use { stream -> stream.filter { Files.isDirectory(it) }.toList() }
         }.getOrDefault(emptyList())
@@ -83,13 +108,17 @@ class ExtensionManager(
                     StagedMeta.serializer(),
                     Files.readString(metaFile),
                 )
+                if (synchronized(lock) { loaded.containsKey(meta.pkg) }) continue
                 val handle = loadExtensionSources(jar, meta.mainClass, meta.pkg)
                 synchronized(lock) {
                     loaded[meta.pkg] = handle
                     metas[meta.pkg] = meta
                 }
-            } catch (e: Exception) {
-                System.err.println("dareader: skipping extension ${dir.fileName}: ${e.message}")
+            } catch (e: Throwable) {
+                // LinkageError from a broken jar must skip this package, not abort startup.
+                System.err.println(
+                    "dareader: skipping extension ${dir.fileName}: ${e.message ?: e.javaClass.simpleName}",
+                )
             }
         }
         refreshInstalled()
@@ -103,14 +132,21 @@ class ExtensionManager(
         val apk = downloadApk(client, apkUrl)
         try {
             val manifest = parseApkManifest(apk)
-            val verdict = manifest.judge()
-            check(verdict.startsWith("accepted")) { verdict }
+            manifest.requireAccepted()
             val raw = requireNotNull(manifest.entryClass) {
                 "rejected: missing source class or factory"
             }
             val fqcn = if (raw.startsWith(".")) manifest.packageName + raw else raw
-            val certHashes = runCatching { apkCertificateHashes(apk) }.getOrDefault(emptyList())
-            trustGate(manifest.packageName, manifest.versionCode, certHashes, storeKey)
+            // Fail closed: a verifier failure must not downgrade to a trust prompt.
+            val certHashes = apkCertificateHashes(apk)
+            trustGate(
+                TrustRequest(
+                    pkg = manifest.packageName,
+                    versionCode = manifest.versionCode,
+                    certHashes = certHashes,
+                    storeKey = storeKey ?: "",
+                ),
+            )
             val jar = dexToJar(apk)
             try {
                 stageAndLoad(
@@ -132,20 +168,42 @@ class ExtensionManager(
         }
     }
 
+    /**
+     * Installs a store-provided jar (no APK, no dex2jar). Jars carry no
+     * signing certificate, so the trust gate pins the artifact SHA-256: the
+     * same bytes reinstall silently, any other bytes re-prompt. Library
+     * metadata from the store index is judged like an APK manifest would be.
+     */
     suspend fun installFromJarUrl(
         jarUrl: String,
         pkg: String,
-        mainClass: String,
         versionName: String,
         versionCode: Long,
+        extensionLib: String? = null,
         storeKey: String? = null,
         iconUrl: String? = null,
     ): Installed = withContext(Dispatchers.IO) {
+        val lib =
+            extensionLib?.takeUnless { it == "0" }?.toDoubleOrNull()
+                ?: ExtensionContract.libVersionFromVersionName(versionName)
+        if (lib == null || !ExtensionContract.isSupportedLibVersion(lib)) {
+            error(
+                "rejected: lib $lib not in ${ExtensionContract.LIB_VERSION_MIN}..${ExtensionContract.LIB_VERSION_MAX}",
+            )
+        }
         val tmp = downloadJar(client, jarUrl)
         try {
-            // Jars carry no signing certs, so the gate falls through to the
-            // pinned set or the caller's trust prompt — same gate, no certs.
-            trustGate(pkg, versionCode, emptyList(), storeKey)
+            trustGate(
+                TrustRequest(
+                    pkg = pkg,
+                    versionCode = versionCode,
+                    artifactSha256 = Hash.sha256(Files.readAllBytes(tmp)),
+                    storeKey = storeKey ?: "",
+                ),
+            )
+            val mainClass =
+                findExtensionEntryClass(tmp)
+                    ?: error("rejected: no loadable Source or SourceFactory in '$pkg' jar")
             stageAndLoad(StagedMeta(pkg, mainClass, versionName, versionCode, iconUrl), tmp)
         } catch (e: Exception) {
             Files.deleteIfExists(tmp)
@@ -153,11 +211,26 @@ class ExtensionManager(
         }
     }
 
+    /** Uninstalls [pkg]: closes its loader, deletes staged files. Never throws. */
+    suspend fun uninstall(pkg: String) = pkgLock(pkg).withLock { removeStaged(pkg) }
+
+    /** Closes every loaded extension (unregistering its sources). Idempotent. */
+    fun close() {
+        val handles = synchronized(lock) {
+            val all = loaded.values.toList()
+            loaded.clear()
+            metas.clear()
+            all
+        }
+        handles.forEach { runCatching { it.close() } }
+        refreshInstalled()
+    }
+
     /**
-     * Closes the loader (which unregisters its sources), then deletes staged
-     * files. Unknown packages are a no-op. Never throws.
+     * Removes staged state for [pkg]; callers hold [pkgLock], so it cannot
+     * race a load of the same package. Never throws.
      */
-    fun uninstall(pkg: String) {
+    private fun removeStaged(pkg: String) {
         val handle = synchronized(lock) {
             metas.remove(pkg)
             loaded.remove(pkg)
@@ -172,19 +245,23 @@ class ExtensionManager(
 
     fun findSource(id: Long): Source? = GetSource.findById(id)
 
-    private fun trustGate(
-        pkg: String,
-        versionCode: Long,
-        certHashes: List<String>,
-        storeKey: String?,
-    ) {
-        val key = storeKey ?: ""
-        if (isTrusted(pkg, versionCode, certHashes, key)) return
-        if (onTrustRequest(pkg, versionCode, certHashes, key)) {
-            pin(pkg, versionCode, certHashes)
+    private fun trustGate(request: TrustRequest) {
+        val trusted =
+            if (request.artifactSha256 != null) {
+                isTrustedArtifact(request.pkg, request.versionCode, request.artifactSha256)
+            } else {
+                isTrusted(request.pkg, request.versionCode, request.certHashes, request.storeKey)
+            }
+        if (trusted) return
+        if (onTrustRequest(request)) {
+            if (request.artifactSha256 != null) {
+                pinArtifact(request.pkg, request.versionCode, request.artifactSha256)
+            } else {
+                pin(request.pkg, request.versionCode, request.certHashes)
+            }
             return
         }
-        throw SecurityException("untrusted extension $pkg v$versionCode")
+        throw SecurityException("untrusted extension ${request.pkg} v${request.versionCode}")
     }
 
     /**
@@ -192,9 +269,13 @@ class ExtensionManager(
      * jar MUST outlive the loader, so on load failure the staged dir is
      * removed (no open loader references it) and the error rethrown.
      */
-    private fun stageAndLoad(meta: StagedMeta, tmpJar: Path): Installed {
+    internal suspend fun stageAndLoad(meta: StagedMeta, tmpJar: Path): Installed =
+        pkgLock(meta.pkg).withLock { stageAndLoadLocked(meta, tmpJar) }
+
+    /** Caller holds [pkgLock]. */
+    private fun stageAndLoadLocked(meta: StagedMeta, tmpJar: Path): Installed {
         // Close + delete any previous install first so reinstalls replace cleanly.
-        uninstall(meta.pkg)
+        removeStaged(meta.pkg)
         val dir = extRoot.resolve(safePkgDir(meta.pkg))
         Files.createDirectories(dir)
         val stagedJar = dir.resolve("extension.jar")

@@ -23,10 +23,11 @@ class PersistentCookieStore(
 
     init {
         lock.withLock {
-            val domains =
-                prefs.all.keys
-                    .map { it.substringBeforeLast(".") }
-                    .toSet()
+            // ADAPTED (dareader): read keys exactly as saveToDisk writes them.
+            // Upstream mapped keys through substringBeforeLast("."), so every
+            // dotted domain (example.com -> "example") failed lookup and all
+            // persisted cookies were dropped on reload.
+            val domains = prefs.all.keys.toSet()
             val domainsToSave = mutableSetOf<String>()
             domains.forEach { domain ->
                 val cookies = prefs.getStringSet(domain, emptySet())

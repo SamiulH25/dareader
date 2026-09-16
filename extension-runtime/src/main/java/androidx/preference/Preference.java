@@ -4,6 +4,8 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.preference.PreferenceManager;
 
+import java.util.Set;
+
 /**
  * Minimal dareader-owned Preference stub. Members grow on demand driven by
  * NoSuchMethodErrors from loaded extensions (never speculatively).
@@ -98,6 +100,18 @@ public class Preference {
         if (key == null) return fallback;
         SharedPreferences prefs = getSharedPreferences();
         return prefs.contains(key) ? prefs.getString(key, fallback) : fallback;
+    }
+
+    protected boolean persistStringSet(Set<String> value) {
+        if (key == null) return false;
+        getSharedPreferences().edit().putStringSet(key, value).apply();
+        return true;
+    }
+
+    protected Set<String> getPersistedStringSet(Set<String> fallback) {
+        if (key == null) return fallback;
+        SharedPreferences prefs = getSharedPreferences();
+        return prefs.contains(key) ? prefs.getStringSet(key, fallback) : fallback;
     }
 
     protected boolean persistBoolean(boolean value) {

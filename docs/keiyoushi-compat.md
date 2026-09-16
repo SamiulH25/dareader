@@ -2,9 +2,9 @@
 
 Status: loader shell slice working (2026-09-15). `--ui [apkUrl]` renders browse →
 detail → reader against live Keiyoushi extensions (exercised: Comic Fury 1.4,
-MangaDex 1.6). Remaining runtime/shim/UI/test gaps are tracked in
-`UNFINISHED.md` (audit 2026-09-15); this doc describes the compat approach,
-not a completion claim.
+MangaDex 1.6). Open work lives on the board (`BOARD.md`); `UNFINISHED.md` is the
+2026-09-15 audit history. This doc describes the compat approach, not a
+completion claim.
 
 Keiyoushi artifacts are Android APKs: `classes.dex` (Dalvik bytecode, not JVM
 Desktop JVM cannot load dex, and extensions link `android.*` +
@@ -13,8 +13,9 @@ Desktop JVM cannot load dex, and extensions link `android.*` +
 1. Parse manifest without installing (`ApkFile`/`apk-parser` +
    `AndroidManifestParser`), check `uses-feature tachiyomi.extension` +
    `tachiyomi.extension.class`, `tachiyomix.name/extensionLib/contentWarning`.
-2. `dex2jar` (`com.googlecode.d2j:dex2jar` — `MultiDexFileReader` →
-   `Dex2jar.from(...).to(jar)`), then `BytecodeEditor.fixAndroidClasses(jar)`.
+2. `dex2jar` (`de.femtopedia.dex2jar:dex-translator` — `MultiDexFileReader` →
+   `Dex2jar.from(...).to(jar)`), then two ASM repair passes
+   (`load/BytecodeRepair.fixR8ConstructorSites`, `load/MangledRefRepair`).
 3. Load with child-first `URLClassLoader` per jar, guarded by per-jar `Mutex`
    (`PackageTools.blockJarUsageWhile`), instantiate `Source | SourceFactory`.
 4. Stub `android.*` via `AndroidCompat/` module (JVM-backed `Context`,
@@ -52,10 +53,12 @@ dareader/
 
 - Kotlin 2.4.10, coroutines 1.11.0, serialization 1.11.0 (+protobuf, +json-okio)
 - OkHttp 5.5.0 (+brotli, +zstd), jsoup 1.23.2
-- dex2jar 2.x (`com.googlecode.d2j`), apk-parser (`net.dongliu:apk-parser`)
-- JRE 21+ to run (build needs JDK 21; present at `/usr/lib/jvm/java-21-openjdk` —
-  run Gradle with `JAVA_HOME=/usr/lib/jvm/java-21-openjdk` since the default
-  `java` on PATH may still be older)
+- dex2jar fork `de.femtopedia.dex2jar:dex-translator`/`dex-tools` 2.4.38,
+  apk-parser `net.dongliu:apk-parser` 2.6.10
+- JRE 21+ to run (build needs JDK 21). On this workstation the pinned toolchain
+  lives at `~/.local/share/dareader-toolchain/jdk`; run
+  `JAVA_HOME=~/.local/share/dareader-toolchain/jdk ./gradlew <task>` (there is
+  no system JDK on PATH).
 
 ## Store / index compat
 
@@ -72,6 +75,7 @@ Mihon `.tachibk` backups and chapter URLs interoperate. Persist
   (`libxrender libxcomposite libxdamage libxkbcommon libxtst`), `DISPLAY` or
   Xvfb under Wayland; else mark source degraded. FlareSolverr hook optional.
 - libVersion drift: Keiyoushi moving 1.6 → 1.7 (`language` BCP-47, `memo`,
-  `getMangaUpdate` flags). Loader must accept both during transition.
+  `getMangaUpdate` flags). The loader accepts 1.3..1.7 during the transition
+  (`ExtensionContract.LIB_VERSION_MIN`/`MAX`).
 - Trust: verify store `signingKey` / APK cert SHA-256; per-jar ClassLoader
   isolation; no silent auto-update.

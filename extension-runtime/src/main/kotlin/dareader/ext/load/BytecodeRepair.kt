@@ -115,14 +115,16 @@ fun fixR8ConstructorSites(jar: Path, report: MutableList<String>? = null) {
             targetNode.methods.add(ctor)
         }
         if (unhandled.isNotEmpty()) {
+            loader.close()
             error("unresolved R8 constructor sites:\n" + unhandled.joinToString("\n"))
         }
 
         for ((path, node) in classes) {
-            val writer = SafeClassWriter(ClassWriter.COMPUTE_FRAMES, jar)
+            val writer = SafeClassWriter(ClassWriter.COMPUTE_FRAMES, loader)
             node.accept(writer)
             Files.write(path, writer.toByteArray(), StandardOpenOption.TRUNCATE_EXISTING)
         }
+        loader.close()
         logger.debug { "repaired $repaired R8 constructor sites in $jar" }
     }
 }
@@ -426,10 +428,7 @@ private fun repairMethod(
     return repaired
 }
 
-internal class SafeClassWriter(flags: Int, jar: Path) : ClassWriter(flags) {
-    private val loader =
-        java.net.URLClassLoader(arrayOf(jar.toUri().toURL()), SafeClassWriter::class.java.classLoader)
-
+internal class SafeClassWriter(flags: Int, private val loader: ClassLoader) : ClassWriter(flags) {
     override fun getCommonSuperClass(type1: String, type2: String): String {
         return try {
             super.getCommonSuperClass(type1, type2)

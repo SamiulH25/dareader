@@ -35,16 +35,32 @@ data class ExtensionManifest(
     val entryIsFactory: Boolean
         get() = sourceClass.isNullOrBlank() && !sourceFactory.isNullOrBlank()
 
-    fun judge(): String = when {
-        !signed -> "rejected: unsigned"
-        !isExtension -> "rejected: missing ${ExtensionContract.EXTENSION_FEATURE} feature"
-        versionName.isEmpty() -> "rejected: missing versionName"
-        entryClass.isNullOrBlank() ->
-            "rejected: missing ${ExtensionContract.METADATA_SOURCE_CLASS} or ${ExtensionContract.METADATA_SOURCE_FACTORY}"
-        libVersion == null || !ExtensionContract.isSupportedLibVersion(libVersion) ->
-            "rejected: lib $libVersion not in ${ExtensionContract.LIB_VERSION_MIN}..${ExtensionContract.LIB_VERSION_MAX}"
-        else -> "accepted: lib=$libVersion sources=[$entryClass]"
-    }
+    /** Human-readable verdict; load paths must gate on [accepted], not on this text. */
+    fun judge(): String =
+        rejectionReason?.let { "rejected: $it" }
+            ?: "accepted: lib=$libVersion sources=[$entryClass]"
+
+    /** Null when the manifest is loadable; otherwise why it is rejected. */
+    val rejectionReason: String?
+        get() = when {
+            !signed -> "unsigned"
+            !isExtension -> "missing ${ExtensionContract.EXTENSION_FEATURE} feature"
+            versionName.isEmpty() -> "missing versionName"
+            entryClass.isNullOrBlank() ->
+                "missing ${ExtensionContract.METADATA_SOURCE_CLASS} or ${ExtensionContract.METADATA_SOURCE_FACTORY}"
+            libVersion == null || !ExtensionContract.isSupportedLibVersion(libVersion) ->
+                "lib $libVersion not in ${ExtensionContract.LIB_VERSION_MIN}..${ExtensionContract.LIB_VERSION_MAX}"
+            else -> null
+        }
+
+    /** True when this manifest passes every load gate. */
+    val accepted: Boolean get() = rejectionReason == null
+}
+
+/** Throws with the judge verdict when this manifest must not be loaded. */
+fun ExtensionManifest.requireAccepted() {
+    val reason = rejectionReason ?: return
+    error("rejected: $reason")
 }
 
 /** Downloads an APK to a temp file. Caller deletes when done. */
@@ -63,7 +79,7 @@ fun downloadApk(client: OkHttpClient, url: String): Path {
 fun parseApkManifest(apk: Path): ExtensionManifest {
     ApkFile(apk.toFile()).use { parser ->
         val meta = parser.apkMeta
-        val values = manifestMetaData(parser.manifestXml)
+        val values = parseManifestMetaData(parser.manifestXml)
         fun meta(key: String): String? = values[key]
 
         val signed = verifyApkSignature(apk)
@@ -90,9 +106,23 @@ fun verifyApkSignature(apk: Path): Boolean =
     runCatching {
         com.android.apksig.ApkVerifier.Builder(apk.toFile()).build().verify().isVerified
     }.getOrDefault(false)
-/** Decodes `<meta-data android:name android:value>` pairs from the manifest XML. */
-private fun manifestMetaData(manifestXml: String): Map<String, String> {
-    val doc = DocumentBuilderFactory.newInstance().newDocumentBuilder()
+/**
+ * Decodes `<meta-data android:name android:value>` pairs from the manifest XML.
+ * The XML comes from downloaded APKs, so DOCTYPEs and external entities are
+ * rejected outright (XXE).
+ */
+internal fun parseManifestMetaData(manifestXml: String): Map<String, String> {
+    val factory =
+        DocumentBuilderFactory.newInstance().apply {
+            setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+            setFeature("http://xml.org/sax/features/external-general-entities", false)
+            setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+            isXIncludeAware = false
+            isExpandEntityReferences = false
+            setAttribute(javax.xml.XMLConstants.ACCESS_EXTERNAL_DTD, "")
+            setAttribute(javax.xml.XMLConstants.ACCESS_EXTERNAL_SCHEMA, "")
+        }
+    val doc = factory.newDocumentBuilder()
         .parse(ByteArrayInputStream(manifestXml.toByteArray()))
     val out = mutableMapOf<String, String>()
     val nodes = doc.getElementsByTagName("meta-data")

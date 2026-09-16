@@ -68,19 +68,6 @@ object DareaderIcons {
         lineTo(20f, 20f)
     }
 
-    /** Store: a shopping bag. */
-    val Store: ImageVector = icon("dareader.store") {
-        moveTo(5.6f, 8f)
-        lineTo(18.4f, 8f)
-        lineTo(17.2f, 19.6f)
-        lineTo(6.8f, 19.6f)
-        close()
-        moveTo(9f, 8f)
-        lineTo(9f, 6.6f)
-        arcTo(3f, 3f, 0f, false, true, 15f, 6.6f)
-        lineTo(15f, 8f)
-    }
-
     /** Extensions: a four-tile apps grid. */
     val Extensions: ImageVector = icon("dareader.extensions") {
         moveTo(4.5f, 4.5f)

@@ -47,18 +47,47 @@ fun isTrusted(pkg: String, versionCode: Long, certHashes: List<String>, storeKey
     }
 }
 
-/** Pins this exact package+version+cert set as user-trusted (TOFU). */
+/**
+ * Pins this exact package+version+cert set as user-trusted (TOFU). Writes are
+ * serialized so concurrent installs cannot lose each other's pins. Refuses
+ * cert-less pins: a package with no certificate evidence must never gain
+ * standing trust.
+ */
 fun pin(pkg: String, versionCode: Long, certHashes: List<String>) {
-    val pins = loadPins().filterNot { it.pkg == pkg && it.versionCode == versionCode }.toMutableList()
-    pins += TrustPin(pkg, versionCode, certHashes.map { it.lowercase() }.sorted())
-    savePins(pins)
+    require(certHashes.isNotEmpty()) { "refusing to pin $pkg with no certificate evidence" }
+    synchronized(pinFileLock) {
+        val pins = loadPins().filterNot { it.pkg == pkg && it.versionCode == versionCode }.toMutableList()
+        pins += TrustPin(pkg, versionCode, certHashes.map { it.lowercase() }.sorted())
+        savePins(pins)
+    }
 }
+
+/**
+ * Trust check for artifacts without a signing certificate (store jars):
+ * true only for the exact package+version+SHA-256 pinned before.
+ */
+fun isTrustedArtifact(pkg: String, versionCode: Long, artifactSha256: String): Boolean =
+    loadPins().any {
+        it.pkg == pkg && it.versionCode == versionCode && it.artifactSha256 == artifactSha256
+    }
+
+/** Pins an exact artifact digest (store jars, which carry no certificate). */
+fun pinArtifact(pkg: String, versionCode: Long, artifactSha256: String) {
+    synchronized(pinFileLock) {
+        val pins = loadPins().filterNot { it.pkg == pkg && it.versionCode == versionCode }.toMutableList()
+        pins += TrustPin(pkg, versionCode, emptyList(), artifactSha256)
+        savePins(pins)
+    }
+}
+
+private val pinFileLock = Any()
 
 @Serializable
 internal data class TrustPin(
     val pkg: String,
     val versionCode: Long,
     val certHashes: List<String>,
+    val artifactSha256: String? = null,
 )
 
 @Serializable

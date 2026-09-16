@@ -12,17 +12,11 @@ import eu.kanade.tachiyomi.network.interceptor.CloudflareInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UncaughtExceptionInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UserAgentInterceptor
 import io.github.oshai.kotlinlogging.KotlinLogging
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
 import okhttp3.Cache
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
-import suwayomi.tachidesk.manga.impl.util.source.GetSource
 import java.io.File
 import java.net.CookieHandler
 import java.net.CookieManager
@@ -57,14 +51,12 @@ class NetworkHelper(
 
     fun defaultUserAgentProvider(): String = userAgent.value
 
-    init {
-        @OptIn(DelicateCoroutinesApi::class)
-        userAgent
-            .drop(1)
-            .onEach {
-                GetSource.unregisterAllSources() // need to reset the headers
-            }.launchIn(GlobalScope)
-    }
+    // ADAPTED (dareader): upstream unregisters every source here so sources
+    // are rebuilt with fresh request headers after a UA change. Dareader's
+    // registry holds live handles that nothing re-instantiates, so the reset
+    // only made findSource(id) return null mid-session. The UA is applied per
+    // request by UserAgentInterceptor and per source through headersBuilder(),
+    // so no registry reset is needed.
 
     /** Persistent HTTP cache dir; a single reused OkHttp cache instead of per-process temp dirs. */
     private val httpCache: Cache by lazy {

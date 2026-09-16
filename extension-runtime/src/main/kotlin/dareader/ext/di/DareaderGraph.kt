@@ -31,15 +31,11 @@ object DareaderGraph {
 
     /** Registers NetworkHelper/Json once; every entry point needs these. */
     fun ensureCore() {
-        if (!has(eu.kanade.tachiyomi.network.NetworkHelper::class.java)) {
-            register(
-                eu.kanade.tachiyomi.network.NetworkHelper::class.java,
-                eu.kanade.tachiyomi.network.NetworkHelper(application),
-            )
-            register(
-                kotlinx.serialization.json.Json::class.java,
-                kotlinx.serialization.json.Json { ignoreUnknownKeys = true },
-            )
+        instances.computeIfAbsent(eu.kanade.tachiyomi.network.NetworkHelper::class.java) {
+            eu.kanade.tachiyomi.network.NetworkHelper(application)
+        }
+        instances.computeIfAbsent(kotlinx.serialization.json.Json::class.java) {
+            kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
         }
     }
 }

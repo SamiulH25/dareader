@@ -4,6 +4,7 @@ import dareader.ext.di.DareaderGraph
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.SourceFactory
 import suwayomi.tachidesk.manga.impl.util.source.GetSource
+import java.lang.reflect.Modifier
 import java.net.URL
 import java.net.URLClassLoader
 import java.nio.file.Path
@@ -81,3 +82,66 @@ fun loadExtensionSources(jar: Path, className: String, pkgName: String): LoadedE
 }
 
 private object ExtensionLoaderAnchor
+
+/** What a jar class can serve as; null when it is not a usable entry. */
+private enum class EntryKind { FACTORY, SOURCE }
+
+/**
+ * Classifies a jar class as an extension entry: concrete, publicly
+ * no-arg-constructible, and a `SourceFactory` or `Source`. Loading without
+ * initialization is enough for the scan, but linking resolves referenced
+ * types, so callers must treat any [Throwable] from here as "not an entry".
+ */
+private fun classifyEntry(fqcn: String, loader: ClassLoader): EntryKind? {
+    val cls = Class.forName(fqcn, false, loader)
+    if (cls.isInterface || Modifier.isAbstract(cls.modifiers)) return null
+    val instantiable = cls.declaredConstructors.any { Modifier.isPublic(it.modifiers) && it.parameterCount == 0 }
+    if (!instantiable) return null
+    return when {
+        SourceFactory::class.java.isAssignableFrom(cls) -> EntryKind.FACTORY
+        Source::class.java.isAssignableFrom(cls) -> EntryKind.SOURCE
+        else -> null
+    }
+}
+
+/**
+ * Finds the loadable entry class of a converted extension jar: a concrete
+ * `SourceFactory` implementation wins; otherwise a single concrete `Source`.
+ * Classes load without initialization, so jars whose static init throws still
+ * scan. Returns null when nothing loadable matches (caller rejects the
+ * install).
+ */
+fun findExtensionEntryClass(jar: Path): String? {
+    val loader =
+        ChildFirstLoader(arrayOf(jar.toUri().toURL()), ExtensionLoaderAnchor::class.java.classLoader)
+    return loader.use { cl ->
+        val sources = mutableListOf<String>()
+        val factories = mutableListOf<String>()
+        java.util.jar.JarFile(jar.toFile()).use { jf ->
+            for (entry in jf.entries()) {
+                if (!entry.name.endsWith(".class")) continue
+                val fqcn = entry.name.removeSuffix(".class").replace('/', '.')
+                if ('$' in fqcn) continue // nested/anonymous impls are not extension entries
+                val kind =
+                    try {
+                        classifyEntry(fqcn, cl)
+                    } catch (_: Throwable) {
+                        // Helper classes load but can fail to link (an Android
+                        // activity catching a type this runtime lacks, say), and
+                        // one unloadable helper must not abort the scan.
+                        continue
+                    }
+                when (kind) {
+                    EntryKind.FACTORY -> factories += fqcn
+                    EntryKind.SOURCE -> sources += fqcn
+                    null -> Unit
+                }
+            }
+        }
+        when {
+            factories.size == 1 -> factories.single()
+            factories.isEmpty() && sources.size == 1 -> sources.single()
+            else -> null
+        }
+    }
+}

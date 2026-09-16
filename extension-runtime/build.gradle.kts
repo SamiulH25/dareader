@@ -40,4 +40,13 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    // Isolate java.util.prefs (the SharedPreferences stub backing) from the
+    // real user tree so preference round-trip tests are deterministic.
+    systemProperty(
+        "java.util.prefs.userRoot",
+        layout.buildDirectory.dir("test-prefs").get().asFile.absolutePath,
+    )
+    // The runtime fixture compiler needs the real test classpath, not the
+    // classpath-manifest jar Gradle may put in `java.class.path`.
+    systemProperty("dareader.test.classpath", sourceSets.test.get().runtimeClasspath.asPath)
 }

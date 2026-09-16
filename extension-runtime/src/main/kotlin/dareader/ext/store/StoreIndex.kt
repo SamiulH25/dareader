@@ -2,6 +2,7 @@
 package dareader.ext.store
 
 
+import eu.kanade.tachiyomi.util.lang.Hash
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -13,6 +14,9 @@ import okhttp3.Request
 import okio.Buffer
 import okio.GzipSource
 import okio.buffer
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.Paths
 
 /**
  * Keiyoushi extension store index (index.pb / index.json), mirroring
@@ -91,17 +95,73 @@ data class NetworkExtensionStore(
 
 private val json = Json { ignoreUnknownKeys = true }
 
-/** Fetches and decodes a store index; sniffs JSON (`{`) vs protobuf, ungzips when needed. */
+/**
+ * Fetches and decodes a store index; sniffs JSON (`{`) vs protobuf, ungzips
+ * when needed. A disk copy plus ETag revalidation keeps repeat opens cheap:
+ * a 304 reuses the cached body, and the cache also survives a failed refetch.
+ */
 fun fetchStore(client: OkHttpClient, indexUrl: String): NetworkExtensionStore {
-    val request = Request.Builder().url(indexUrl).build()
+    val cacheFile = storeCacheFile(indexUrl)
+    val etag = readCachedEtag(cacheFile)
+    val request =
+        Request.Builder().url(indexUrl)
+            .apply { if (etag != null) header("If-None-Match", etag) }
+            .build()
     client.newCall(request).execute().use { response ->
+        if (response.code == 304) {
+            val cached = readCachedBody(cacheFile)
+            if (cached != null) return decodeStore(cached)
+        }
         check(response.isSuccessful) { "store fetch failed: HTTP ${response.code}" }
         val bytes = response.body.bytes().ungzipIfNeeded()
-        return if (bytes.isNotEmpty() && bytes[0] == '{'.code.toByte()) {
-            json.decodeFromString(NetworkExtensionStore.serializer(), bytes.decodeToString())
-        } else {
-            ProtoBuf.decodeFromByteArray(NetworkExtensionStore.serializer(), bytes)
+        writeCachedIndex(cacheFile, bytes, response.header("ETag"))
+        return decodeStore(bytes)
+    }
+}
+
+internal fun decodeStore(bytes: ByteArray): NetworkExtensionStore =
+    if (bytes.isNotEmpty() && bytes[0] == '{'.code.toByte()) {
+        json.decodeFromString(NetworkExtensionStore.serializer(), bytes.decodeToString())
+    } else {
+        ProtoBuf.decodeFromByteArray(NetworkExtensionStore.serializer(), bytes)
+    }
+
+/** Index cache root; overridable via `dareader.store.cache.dir` (tests/embedders). */
+internal fun storeCacheDir(): Path {
+    System.getProperty("dareader.store.cache.dir")?.takeIf { it.isNotBlank() }?.let {
+        return Paths.get(it)
+    }
+    val base = System.getenv("XDG_CACHE_HOME")?.ifBlank { null }
+        ?: (System.getProperty("user.home") + "/.cache")
+    return Paths.get(base, "dareader", "store")
+}
+
+private fun storeCacheFile(indexUrl: String): Path = storeCacheDir().resolve(Hash.sha256(indexUrl))
+
+private fun etagFile(cacheFile: Path): Path =
+    cacheFile.resolveSibling(cacheFile.fileName.toString() + ".etag")
+
+private fun readCachedEtag(cacheFile: Path): String? =
+    runCatching { Files.readString(etagFile(cacheFile)).trim().ifBlank { null } }.getOrNull()
+
+private fun readCachedBody(cacheFile: Path): ByteArray? =
+    runCatching { Files.readAllBytes(cacheFile).takeIf { it.isNotEmpty() } }.getOrNull()
+
+private fun writeCachedIndex(
+    cacheFile: Path,
+    bytes: ByteArray,
+    etag: String?,
+) {
+    runCatching {
+        Files.createDirectories(cacheFile.parent)
+        val tmp = Files.createTempFile(cacheFile.parent, "index", ".part")
+        try {
+            Files.write(tmp, bytes)
+            Files.move(tmp, cacheFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        } finally {
+            Files.deleteIfExists(tmp)
         }
+        if (etag != null) Files.writeString(etagFile(cacheFile), etag)
     }
 }
 
@@ -124,8 +184,14 @@ private fun ByteArray.ungzipIfNeeded(): ByteArray {
     return GzipSource(Buffer().write(this)).buffer().readByteArray()
 }
 
-/** Shared HTTP client for store/APK fetches; owned here so callers need no OkHttp dep. */
-fun defaultHttpClient(): OkHttpClient = OkHttpClient()
+private val sharedHttpClient: OkHttpClient by lazy { OkHttpClient() }
+
+/**
+ * Shared HTTP client for store/APK fetches; owned here so callers need no
+ * OkHttp dep. One instance per process: reusing it keeps the connection pool
+ * and dispatcher threads instead of rebuilding them per call site.
+ */
+fun defaultHttpClient(): OkHttpClient = sharedHttpClient
 
 /**
  * One entry of a `repo.json` store list. Kept lenient: unknown fields are

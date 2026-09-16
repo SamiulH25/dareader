@@ -33,6 +33,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dareader.library.HistoryEntry
 import dareader.library.LibraryEntry
+import dareader.library.MangaKey
 import dareader.library.MangaRef
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.model.SManga
@@ -101,7 +102,7 @@ fun LibraryScreen(state: AppState) {
                     (entry.manga.author?.contains(q, ignoreCase = true) ?: false)
             }
             .filter { entry ->
-                val reads = readCounts[entry.manga.url] ?: 0
+                val reads = readCounts[MangaKey(entry.sourceId, entry.manga.url)] ?: 0
                 when (filter) {
                     LibraryFilter.All -> true
                     LibraryFilter.Reading -> reads > 0
@@ -144,7 +145,7 @@ fun LibraryScreen(state: AppState) {
         }
         when {
             entries.isEmpty() -> EmptyNotice("Your library is empty. Titles you save will appear here.") {
-                OutlinedButton({ state.screen = Screen.Setup }) { Text("Browse extensions") }
+                OutlinedButton({ state.navigateRoot(Screen.Extensions) }) { Text("Browse extensions") }
             }
             shown.isEmpty() -> EmptyNotice("No titles match this filter.")
             else -> LazyVerticalGrid(
@@ -154,7 +155,7 @@ fun LibraryScreen(state: AppState) {
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
                 items(shown, key = { "${it.sourceId}:${it.manga.url}" }) { entry ->
-                    LibraryCell(state, entry, readCounts[entry.manga.url] ?: 0)
+                    LibraryCell(state, entry, readCounts[MangaKey(entry.sourceId, entry.manga.url)] ?: 0)
                 }
             }
         }

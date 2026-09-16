@@ -4,6 +4,8 @@ import java.nio.file.Files
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -61,5 +63,41 @@ class ExtensionTrustTest {
         assertFalse(isTrusted("com.example.ext", 8L, listOf(hash), ""))
         assertFalse(isTrusted("com.example.ext", 7L, listOf(otherHash), ""))
         assertFalse(isTrusted("com.example.other", 7L, listOf(hash), ""))
+    }
+
+    @Test
+    fun concurrentPinsAllPersist() {
+        val threads = 16
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(threads)
+        try {
+            val futures =
+                (1..threads).map { n ->
+                    pool.submit {
+                        pin("com.example.ext$n", n.toLong(), listOf("%02x".format(n).repeat(32)))
+                    }
+                }
+            futures.forEach { it.get() }
+        } finally {
+            pool.shutdown()
+        }
+
+        val pinned = loadPins().filter { it.pkg.startsWith("com.example.ext") }
+        assertEquals(threads, pinned.size)
+    }
+
+    @Test
+    fun artifactPinTrustsOnlyTheExactBytes() {
+        val digest = "aa".repeat(32)
+        pinArtifact("com.example.ext", 7L, digest)
+
+        assertTrue(isTrustedArtifact("com.example.ext", 7L, digest))
+        assertFalse(isTrustedArtifact("com.example.ext", 8L, digest))
+        assertFalse(isTrustedArtifact("com.example.ext", 7L, "bb".repeat(32)))
+        assertFalse(isTrustedArtifact("com.example.other", 7L, digest))
+    }
+
+    @Test
+    fun pinRefusesEmptyCertSet() {
+        assertFailsWith<IllegalArgumentException> { pin("com.example.ext", 1L, emptyList()) }
     }
 }

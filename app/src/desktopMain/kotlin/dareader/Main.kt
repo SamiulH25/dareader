@@ -1,6 +1,7 @@
 package dareader
 
 import dareader.ext.ExtensionContract
+import dareader.ext.pkg.requireAccepted
 import dareader.ext.store.defaultHttpClient
 import dareader.ext.store.fetchSplitExtensionList
 import dareader.ext.store.fetchStore
@@ -10,7 +11,9 @@ private fun printUsage() {
     println(
         """
         usage: dareader <subcommand> [args] | <indexUrl> [packageFilter]
-          --ui [apkUrl]                 launch Compose desktop UI (optional auto-demo apk)
+          --ui [apkUrl] [--at=<screen>] launch Compose desktop UI; optional APK to load,
+                                        optional stop point (browse|detail|reader|
+                                        library|history|extensions|more)
           --probe                       self-check lib-version probe
           --help, -h                    show this help
           flare <url> [solverUrl]       fetch URL through the Cloudflare interceptor
@@ -36,12 +39,19 @@ fun main(args: Array<String>) {
     }
     if (args.isNotEmpty() && args[0] == "--ui") {
         val state = dareader.ui.AppState()
-        if (args.size == 2) state.autoDemo(args[1])
+        val options = args.drop(1)
+        val apkUrl = options.firstOrNull { !it.startsWith("--") }
+        val stopAt = options.firstOrNull { it.startsWith("--at=") }?.removePrefix("--at=")
+        when {
+            apkUrl != null -> state.autoDemo(apkUrl, stopAt)
+            stopAt != null -> state.openScreen(stopAt)
+        }
         androidx.compose.ui.window.application {
             val windowState = dareader.ui.rememberDareaderWindowState()
             androidx.compose.ui.window.Window(
                 onCloseRequest = {
                     dareader.ui.saveWindowState(windowState)
+                    state.shutdown()
                     exitApplication()
                 },
                 title = "dareader",
@@ -156,7 +166,8 @@ fun main(args: Array<String>) {
         val apk = dareader.ext.pkg.downloadApk(client, args[1])
         try {
             val manifest = dareader.ext.pkg.parseApkManifest(apk)
-            val raw = requireNotNull(manifest.sourceClass) { "no source class" }
+            manifest.requireAccepted()
+            val raw = requireNotNull(manifest.entryClass) { "no source class or factory" }
             val fqcn = if (raw.startsWith(".")) manifest.packageName + raw else raw
             val jar = dareader.ext.load.dexToJar(apk)
             try {
@@ -185,7 +196,8 @@ fun main(args: Array<String>) {
         try {
             val manifest = dareader.ext.pkg.parseApkManifest(apk)
             println(manifest.judge())
-            val raw = requireNotNull(manifest.sourceClass) { "no source class" }
+            manifest.requireAccepted()
+            val raw = requireNotNull(manifest.entryClass) { "no source class or factory" }
             val fqcn = if (raw.startsWith(".")) manifest.packageName + raw else raw
             val jar = dareader.ext.load.dexToJar(apk)
             try {

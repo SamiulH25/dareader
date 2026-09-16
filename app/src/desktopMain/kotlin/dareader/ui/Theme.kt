@@ -1,11 +1,13 @@
 package dareader.ui
 
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -139,18 +141,20 @@ private val DareaderShapes = Shapes(
     extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(28.dp),
 )
 
-/** Hairline used between list rows and under app bars. */
-@Composable
-fun hairline() = MaterialTheme.colorScheme.outlineVariant
-
 @Composable
 fun DareaderTheme(darkTheme: Boolean, content: @Composable () -> Unit) {
+    val scheme = if (darkTheme) DarkScheme else LightScheme
     MaterialTheme(
-        colorScheme = if (darkTheme) DarkScheme else LightScheme,
+        colorScheme = scheme,
         typography = DareaderTypography,
         shapes = DareaderShapes,
-        content = content,
-    )
+    ) {
+        // Material 3's MaterialTheme provides no LocalContentColor, so it stays
+        // at its default (black) and every Text without an explicit color
+        // disappears on the dark scheme. Screens paint `background`, whose
+        // content color is `onBackground`.
+        CompositionLocalProvider(LocalContentColor provides scheme.onBackground, content = content)
+    }
 }
 
 private fun themeFile() = defaultDataDir().resolve("theme.json")

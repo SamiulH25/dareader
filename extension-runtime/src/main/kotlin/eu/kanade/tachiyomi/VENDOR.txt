@@ -5,7 +5,7 @@ License: MPL-2.0 (same as upstream; dareader's own code is separate).
 
 - `eu/kanade/tachiyomi/source/**` (Source API + models + HttpSource)
 - `eu/kanade/tachiyomi/network/**` (NetworkHelper, cookies, interceptors)
-- `eu/kanade/tachiyomi/util/{JsoupExtensions,lang/*}`
+- `eu/kanade/tachiyomi/util/{JsoupExtensions,lang/*,PkceUtil.kt}`
 
 
 `dareader/ext/**` is dareader-original and stays clean-room.
@@ -15,3 +15,12 @@ Select/Text/CheckBox/TriState/Group/Sort are `open`, not upstream's
 (`new Filter$Text` in generated filter factories); abstract breaks linkage
 with InstantiationError. Open is strictly more permissive at runtime and
 remains source-compatible for 1.6 extensions that subclass them.
+ADAPTED (dareader, 2026-09-16): network/PersistentCookieStore.kt reloads
+preference keys verbatim; upstream mapped them through
+`substringBeforeLast(".")`, so every dotted-domain cookie failed lookup and
+all persisted cookies were dropped on process restart.
+ADAPTED (dareader, 2026-09-16): network/NetworkHelper.kt does not clear the
+source registry on user-agent changes; upstream's reset is unrepairable here
+because dareader holds live source handles that nothing re-instantiates (the
+reset only made `findSource(id)` return null). UA is applied per request by
+UserAgentInterceptor and per source through `headersBuilder()`.

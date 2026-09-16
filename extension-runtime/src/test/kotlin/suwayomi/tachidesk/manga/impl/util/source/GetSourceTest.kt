@@ -11,7 +11,6 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
-import kotlin.test.assertTrue
 
 class GetSourceTest {
 
@@ -32,17 +31,25 @@ class GetSourceTest {
         override suspend fun getPageList(chapter: SChapter): List<Page> = emptyList()
     }
 
+    private val registeredPkgs = mutableSetOf<String>()
+
+    private fun register(pkg: String, vararg sources: Source) {
+        GetSource.register(pkg, sources.toList())
+        registeredPkgs += pkg
+    }
+
     @AfterTest
-    fun clearRegistry() {
-        GetSource.unregisterAllSources()
+    fun unregisterRegistered() {
+        registeredPkgs.forEach(GetSource::unregister)
+        registeredPkgs.clear()
     }
 
     @Test
     fun registerFindAndUnregisterRoundTrip() {
         val a = fakeSource(1L, "A")
         val b = fakeSource(2L, "B")
-        GetSource.register("com.example.a", listOf(a))
-        GetSource.register("com.example.b", listOf(b))
+        register("com.example.a", a)
+        register("com.example.b", b)
 
         assertEquals(a, GetSource.findById(1L))
         assertEquals(b, GetSource.findById(2L))
@@ -50,19 +57,19 @@ class GetSourceTest {
         assertEquals(setOf(a, b), GetSource.allSources().toSet())
 
         GetSource.unregister("com.example.a")
+        registeredPkgs -= "com.example.a"
         assertNull(GetSource.findById(1L))
         assertEquals(listOf(b), GetSource.allSources())
     }
 
     @Test
-    fun unregisterAllClearsAndNotifies() {
-        var notified = 0
-        GetSource.onUnregisterAll { notified++ }
-        GetSource.register("com.example.a", listOf(fakeSource(1L, "A")))
-        GetSource.unregisterAllSources()
-        assertTrue(GetSource.allSources().isEmpty())
-        assertTrue(notified >= 1)
-        // Listener leaks across tests would double-fire; scope is acceptable here
-        // since notify-on-clear is the asserted contract.
+    fun reRegisterReplacesPackageSources() {
+        val old = fakeSource(1L, "A")
+        val fresh = fakeSource(3L, "A2")
+        register("com.example.a", old)
+        register("com.example.a", fresh)
+
+        assertNull(GetSource.findById(1L))
+        assertEquals(listOf(fresh), GetSource.allSources())
     }
 }

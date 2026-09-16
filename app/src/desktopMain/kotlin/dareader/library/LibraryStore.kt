@@ -46,7 +46,23 @@ data class HistoryEntry(
     val at: Long,
 )
 
+/** Identity of a manga inside one source; persisted state is keyed by this. */
+data class MangaKey(
+    val sourceId: Long,
+    val url: String,
+)
+
+/** Source id used for progress records persisted before keys carried a source. */
+private const val LEGACY_SOURCE_ID = 0L
+
 private data class ChapterState(val read: Boolean = false, val page: Int = 0)
+
+private data class ProgressRecord(
+    val sourceId: Long,
+    val mangaUrl: String,
+    val chapterUrl: String,
+    val state: ChapterState,
+)
 
 /**
  * File-backed library / history / reading-progress store.
@@ -66,9 +82,9 @@ class LibraryStore(dataDir: Path) {
     private val historyFile: Path = dir.resolve("history.json")
     private val progressFile: Path = dir.resolve("progress.json")
 
-    private val libraryByUrl = LinkedHashMap<String, LibraryEntry>()
+    private val libraryByKey = LinkedHashMap<MangaKey, LibraryEntry>()
     private val historyList = ArrayList<HistoryEntry>()
-    private val chapters = HashMap<Pair<String, String>, ChapterState>()
+    private val chapters = HashMap<Triple<Long, String, String>, ChapterState>()
 
     private val _entries = MutableStateFlow<List<LibraryEntry>>(emptyList())
     val entries: StateFlow<List<LibraryEntry>> = _entries.asStateFlow()
@@ -76,9 +92,13 @@ class LibraryStore(dataDir: Path) {
     private val _history = MutableStateFlow<List<HistoryEntry>>(emptyList())
     val history: StateFlow<List<HistoryEntry>> = _history.asStateFlow()
 
-    /** Chapters marked read per manga url; drives the library grid badges. */
-    private val _readCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
-    val readCounts: StateFlow<Map<String, Int>> = _readCounts.asStateFlow()
+    /** Chapters marked read per manga; drives the library grid badges. */
+    private val _readCounts = MutableStateFlow<Map<MangaKey, Int>>(emptyMap())
+    val readCounts: StateFlow<Map<MangaKey, Int>> = _readCounts.asStateFlow()
+
+    /** Bumped on every progress mutation; screens key read-state lookups on it. */
+    private val _progressRevision = MutableStateFlow(0L)
+    val progressRevision: StateFlow<Long> = _progressRevision.asStateFlow()
 
     init {
         lock.withLock {
@@ -90,48 +110,86 @@ class LibraryStore(dataDir: Path) {
     fun toggleInLibrary(sourceId: Long, manga: SManga) {
         lock.withLock {
             val snapshot = snapshotOf(manga)
-            if (libraryByUrl.remove(snapshot.url) == null) {
-                libraryByUrl[snapshot.url] = LibraryEntry(
+            val key = MangaKey(sourceId, snapshot.url)
+            if (libraryByKey.remove(key) == null) {
+                libraryByKey[key] = LibraryEntry(
                     sourceId = sourceId,
                     manga = snapshot,
                     addedAt = System.currentTimeMillis(),
                 )
             }
             persistLibrary()
-            _entries.value = libraryByUrl.values.toList()
+            _entries.value = libraryByKey.values.toList()
         }
     }
 
-    fun isInLibrary(mangaUrl: String): Boolean =
-        lock.withLock { libraryByUrl.containsKey(mangaUrl) }
-
-    fun markChapterRead(mangaUrl: String, chapterUrl: String, read: Boolean) {
+    fun markChapterRead(sourceId: Long, mangaUrl: String, chapterUrl: String, read: Boolean) {
         lock.withLock {
-            val key = mangaUrl to chapterUrl
+            adoptLegacy(sourceId, mangaUrl, chapterUrl)
+            val key = Triple(sourceId, mangaUrl, chapterUrl)
             chapters[key] = (chapters[key] ?: ChapterState()).copy(read = read)
             persistProgress()
             recomputeReadCounts()
+            bumpProgress()
         }
     }
 
-    fun isChapterRead(mangaUrl: String, chapterUrl: String): Boolean =
-        lock.withLock { chapters[mangaUrl to chapterUrl]?.read ?: false }
-
-    fun saveProgress(mangaUrl: String, chapterUrl: String, pageIndex: Int) {
+    /** Bulk read toggle for a whole chapter list: one persistence pass. */
+    fun markChaptersRead(sourceId: Long, mangaUrl: String, chapterUrls: List<String>, read: Boolean) {
         lock.withLock {
-            val key = mangaUrl to chapterUrl
+            if (chapterUrls.isEmpty()) return
+            chapterUrls.forEach { chapterUrl ->
+                adoptLegacy(sourceId, mangaUrl, chapterUrl)
+                val key = Triple(sourceId, mangaUrl, chapterUrl)
+                chapters[key] = (chapters[key] ?: ChapterState()).copy(read = read)
+            }
+            persistProgress()
+            recomputeReadCounts()
+            bumpProgress()
+        }
+    }
+
+    fun isChapterRead(sourceId: Long, mangaUrl: String, chapterUrl: String): Boolean =
+        lock.withLock {
+            adoptLegacy(sourceId, mangaUrl, chapterUrl)
+            chapters[Triple(sourceId, mangaUrl, chapterUrl)]?.read ?: false
+        }
+
+    fun saveProgress(sourceId: Long, mangaUrl: String, chapterUrl: String, pageIndex: Int) {
+        lock.withLock {
+            adoptLegacy(sourceId, mangaUrl, chapterUrl)
+            val key = Triple(sourceId, mangaUrl, chapterUrl)
             chapters[key] = (chapters[key] ?: ChapterState()).copy(page = pageIndex.coerceAtLeast(0))
             persistProgress()
+            bumpProgress()
         }
     }
 
-    fun getProgress(mangaUrl: String, chapterUrl: String): Int =
-        lock.withLock { chapters[mangaUrl to chapterUrl]?.page ?: 0 }
+    fun getProgress(sourceId: Long, mangaUrl: String, chapterUrl: String): Int =
+        lock.withLock {
+            adoptLegacy(sourceId, mangaUrl, chapterUrl)
+            chapters[Triple(sourceId, mangaUrl, chapterUrl)]?.page ?: 0
+        }
+
+    /**
+     * Progress records written before keys carried a source hydrate under
+     * [LEGACY_SOURCE_ID]. The first source to touch the manga adopts them in
+     * memory; the next explicit write persists the new key, so read-only
+     * lookups never touch the file. Other sources keep their own entries.
+     */
+    private fun adoptLegacy(sourceId: Long, mangaUrl: String, chapterUrl: String) {
+        val legacy = chapters.remove(Triple(LEGACY_SOURCE_ID, mangaUrl, chapterUrl)) ?: return
+        chapters[Triple(sourceId, mangaUrl, chapterUrl)] = legacy
+    }
+
+    private fun bumpProgress() {
+        _progressRevision.value = _progressRevision.value + 1
+    }
 
     fun recordHistory(sourceId: Long, manga: SManga) {
         lock.withLock {
             val snapshot = snapshotOf(manga)
-            historyList.removeAll { it.manga.url == snapshot.url }
+            historyList.removeAll { it.sourceId == sourceId && it.manga.url == snapshot.url }
             historyList.add(
                 0,
                 HistoryEntry(
@@ -156,7 +214,7 @@ class LibraryStore(dataDir: Path) {
     // -- hydration (corrupt/missing -> empty, never throws) --
 
     private fun hydrate() {
-        libraryByUrl.clear()
+        libraryByKey.clear()
         readArray(libraryFile).forEach { element ->
             val entry = runCatching {
                 val obj = element.jsonObject
@@ -167,9 +225,9 @@ class LibraryStore(dataDir: Path) {
                     addedAt = obj.stringOrNull("addedAt")?.toLongOrNull() ?: 0L,
                 )
             }.getOrNull()
-            if (entry != null) libraryByUrl[entry.manga.url] = entry
+            if (entry != null) libraryByKey[MangaKey(entry.sourceId, entry.manga.url)] = entry
         }
-        _entries.value = libraryByUrl.values.toList()
+        _entries.value = libraryByKey.values.toList()
 
         historyList.clear()
         readArray(historyFile).forEach { element ->
@@ -190,13 +248,14 @@ class LibraryStore(dataDir: Path) {
         readArray(progressFile).forEach { element ->
             val parsed = runCatching {
                 val obj = element.jsonObject
+                val sourceId = obj.stringOrNull("sourceId")?.toLongOrNull() ?: LEGACY_SOURCE_ID
                 val mangaUrl = obj.stringOrNull("mangaUrl") ?: return@runCatching null
                 val chapterUrl = obj.stringOrNull("chapterUrl") ?: return@runCatching null
                 val read = obj.stringOrNull("read")?.toBooleanStrictOrNull() ?: false
                 val page = obj.stringOrNull("page")?.toIntOrNull()?.coerceAtLeast(0) ?: 0
-                Triple(mangaUrl, chapterUrl, ChapterState(read = read, page = page))
+                ProgressRecord(sourceId, mangaUrl, chapterUrl, ChapterState(read = read, page = page))
             }.getOrNull() ?: return@forEach
-            chapters[parsed.first to parsed.second] = parsed.third
+            chapters[Triple(parsed.sourceId, parsed.mangaUrl, parsed.chapterUrl)] = parsed.state
         }
         recomputeReadCounts()
     }
@@ -204,7 +263,7 @@ class LibraryStore(dataDir: Path) {
     private fun recomputeReadCounts() {
         _readCounts.value = chapters.entries
             .filter { it.value.read }
-            .groupingBy { it.key.first }
+            .groupingBy { MangaKey(it.key.first, it.key.second) }
             .eachCount()
     }
 
@@ -212,7 +271,7 @@ class LibraryStore(dataDir: Path) {
 
     private fun persistLibrary() {
         val array = buildJsonArray {
-            libraryByUrl.values.forEach { entry ->
+            libraryByKey.values.forEach { entry ->
                 add(
                     buildJsonObject {
                         put("sourceId", entry.sourceId.toString())
@@ -245,8 +304,9 @@ class LibraryStore(dataDir: Path) {
             chapters.forEach { (key, state) ->
                 add(
                     buildJsonObject {
-                        put("mangaUrl", key.first)
-                        put("chapterUrl", key.second)
+                        put("sourceId", key.first.toString())
+                        put("mangaUrl", key.second)
+                        put("chapterUrl", key.third)
                         put("read", state.read.toString())
                         put("page", state.page.toString())
                     },

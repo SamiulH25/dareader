@@ -2,22 +2,18 @@ package suwayomi.tachidesk.manga.impl.util.source
 
 import eu.kanade.tachiyomi.source.Source
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Dareader-owned source registry, mirroring Suwayomi's GetSource.
  *
- * Sources are keyed by extension package name. [unregisterAllSources] clears
- * the registry and notifies reset listeners (e.g. NetworkHelper, which must
- * rebuild clients when the UA changes).
+ * Sources are keyed by extension package name. There is deliberately no
+ * bulk-clear hook: dareader's loaded handles are the only holders of live
+ * `Source` instances, so wiping the registry could never be repaired by
+ * anything (the old reset-on-UA-change hook made `findSource(id)` return null
+ * for every source mid-session).
  */
 object GetSource {
     private val sourcesByPkg = ConcurrentHashMap<String, List<Source>>()
-    private val listeners = CopyOnWriteArrayList<() -> Unit>()
-
-    fun onUnregisterAll(listener: () -> Unit) {
-        listeners += listener
-    }
 
     fun register(pkg: String, sources: List<Source>) {
         sourcesByPkg[pkg] = sources.toList()
@@ -31,9 +27,4 @@ object GetSource {
         sourcesByPkg.values.flatten().firstOrNull { it.id == id }
 
     fun allSources(): List<Source> = sourcesByPkg.values.flatten()
-
-    fun unregisterAllSources() {
-        sourcesByPkg.clear()
-        listeners.forEach { it() }
-    }
 }

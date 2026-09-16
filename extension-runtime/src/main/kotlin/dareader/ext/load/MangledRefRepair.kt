@@ -65,10 +65,19 @@ fun fixMangledExternalRefs(jar: Path) {
 
         if (fixed > 0) {
             println("repair: restored $fixed mangled external refs")
-            for ((path, node) in classes) {
-                val writer = SafeClassWriter(ClassWriter.COMPUTE_FRAMES, jar)
-                node.accept(writer)
-                Files.write(path, writer.toByteArray(), StandardOpenOption.TRUNCATE_EXISTING)
+            val loader =
+                java.net.URLClassLoader(
+                    arrayOf(jar.toUri().toURL()),
+                    ExternalRefLoader::class.java.classLoader,
+                )
+            try {
+                for ((path, node) in classes) {
+                    val writer = SafeClassWriter(ClassWriter.COMPUTE_FRAMES, loader)
+                    node.accept(writer)
+                    Files.write(path, writer.toByteArray(), StandardOpenOption.TRUNCATE_EXISTING)
+                }
+            } finally {
+                loader.close()
             }
         }
     }

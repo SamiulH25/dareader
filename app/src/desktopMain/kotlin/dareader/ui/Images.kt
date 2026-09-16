@@ -5,7 +5,11 @@ import androidx.compose.ui.graphics.toComposeImageBitmap
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.online.HttpSource
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
 import org.jetbrains.skia.Image
@@ -13,6 +17,8 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Source-aware image loading: every fetch goes through the extension's own
@@ -26,17 +32,28 @@ import java.security.MessageDigest
  */
 object PageImages {
     private const val MAX_MEM_BYTES = 96L * 1024 * 1024
-    private const val MAX_FILES = 1000
+    private const val MAX_DISK_BYTES = 256L * 1024 * 1024
     private const val MAX_CONCURRENT_FETCHES = 6
 
     private data class Entry(val bitmap: ImageBitmap, val bytes: Long)
+
+    /** Disk-cache entry for eviction; pure data so the selector stays testable. */
+    internal data class DiskEntry(val path: Path, val bytes: Long, val lastModified: Long)
 
     private val lock = Any()
     private val mem = LinkedHashMap<String, Entry>(64, 0.75f, true)
     private var memBytes = 0L
     private val permits = Semaphore(MAX_CONCURRENT_FETCHES)
 
+    /** Owns in-flight fetches so a cancelled waiter cannot cancel shared work. */
+    private val fetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val inFlight = ConcurrentHashMap<String, Deferred<ImageBitmap>>()
+    private val diskBytes = AtomicLong(-1L)
+
     val diskDir: Path = run {
+        System.getProperty("dareader.cache.dir")?.takeIf { it.isNotBlank() }?.let {
+            return@run Path.of(it).resolve("covers")
+        }
         val base = System.getenv("XDG_CACHE_HOME")?.ifBlank { null }
             ?: (System.getProperty("user.home") + "/.cache")
         Path.of(base, "dareader", "covers")
@@ -68,15 +85,28 @@ object PageImages {
 
     private suspend fun cached(key: String, fetch: suspend () -> ByteArray): ImageBitmap {
         synchronized(lock) { mem[key]?.let { return it.bitmap } }
-        val diskBytes = withContext(Dispatchers.IO) { diskRead(key) }
-        if (diskBytes != null) {
-            val bitmap = decodeOrNull(diskBytes)
+        val diskCached = withContext(Dispatchers.IO) { diskRead(key) }
+        if (diskCached != null) {
+            val bitmap = decodeOrNull(diskCached)
             if (bitmap != null) {
                 memPut(key, bitmap)
                 return bitmap
             }
             withContext(Dispatchers.IO) { diskDelete(key) }
         }
+        // Single-flight: concurrent loads of one key share a single fetch.
+        val deferred =
+            inFlight.computeIfAbsent(key) {
+                fetchScope.async { fetchDecodeAndCache(key, fetch) }
+            }
+        try {
+            return deferred.await()
+        } finally {
+            inFlight.remove(key, deferred)
+        }
+    }
+
+    private suspend fun fetchDecodeAndCache(key: String, fetch: suspend () -> ByteArray): ImageBitmap {
         permits.acquire()
         try {
             val bytes = withContext(Dispatchers.IO) { fetch() }
@@ -132,6 +162,7 @@ object PageImages {
         runCatching {
             Files.createDirectories(diskDir)
             val file = diskFile(key)
+            val previous = runCatching { Files.size(file) }.getOrDefault(0L)
             val tmp = Files.createTempFile(diskDir, "cover", ".part")
             try {
                 Files.write(tmp, bytes)
@@ -143,20 +174,44 @@ object PageImages {
             } finally {
                 Files.deleteIfExists(tmp)
             }
-            trimDisk()
+            if (diskBytes.get() < 0) diskBytes.set(scanDiskBytes())
+            val total = diskBytes.get() + bytes.size - previous
+            diskBytes.set(total)
+            if (total > MAX_DISK_BYTES) trimDisk()
         }
     }
 
-    private fun trimDisk() {
+    /** Oldest-first eviction until [entries] fit under [maxBytes]; pure for tests. */
+    internal fun selectForEviction(entries: List<DiskEntry>, maxBytes: Long): List<Path> {
+        var total = entries.sumOf { it.bytes }
+        if (total <= maxBytes) return emptyList()
+        val evicted = mutableListOf<Path>()
+        for (entry in entries.sortedBy { it.lastModified }) {
+            evicted.add(entry.path)
+            total -= entry.bytes
+            if (total <= maxBytes) break
+        }
+        return evicted
+    }
+
+    private fun scanDiskBytes(): Long =
         runCatching {
             Files.list(diskDir).use { stream ->
-                val files = stream.filter { Files.isRegularFile(it) }.toList()
-                if (files.size > MAX_FILES) {
-                    files.sortedBy { Files.getLastModifiedTime(it).toMillis() }
-                        .take(files.size - MAX_FILES)
-                        .forEach { Files.deleteIfExists(it) }
-                }
+                stream.filter { Files.isRegularFile(it) }.mapToLong { Files.size(it) }.sum()
             }
+        }.getOrDefault(0L)
+
+    private fun trimDisk() {
+        runCatching {
+            Files.createDirectories(diskDir)
+            val entries =
+                Files.list(diskDir).use { stream ->
+                    stream.filter { Files.isRegularFile(it) }
+                        .map { DiskEntry(it, Files.size(it), Files.getLastModifiedTime(it).toMillis()) }
+                        .toList()
+                }
+            selectForEviction(entries, MAX_DISK_BYTES).forEach { Files.deleteIfExists(it) }
+            diskBytes.set(scanDiskBytes())
         }
     }
 }

@@ -129,15 +129,28 @@ suspend fun Call.awaitSuccess(): Response {
 fun OkHttpClient.newCachelessCallWithProgress(
     request: Request,
     listener: ProgressListener,
+    existingSize: Long = 0L,
 ): Call {
     val progressClient =
         newBuilder()
             .cache(null)
             .addNetworkInterceptor { chain ->
-                val originalResponse = chain.proceed(chain.request())
+                val progressRequest =
+                    chain.request()
+                        .newBuilder()
+                        .apply {
+                            if (existingSize > 0 && chain.request().header("Range") == null) {
+                                header("Range", "bytes=$existingSize-")
+                            }
+                        }
+                        .build()
+
+                val originalResponse = chain.proceed(progressRequest)
+                // Only trust the offset when the server actually honoured the range request.
+                val actualExistingSize = if (originalResponse.code == 206) existingSize else 0L
                 originalResponse
                     .newBuilder()
-                    .body(ProgressResponseBody(originalResponse.body, listener))
+                    .body(ProgressResponseBody(originalResponse.body, listener, actualExistingSize))
                     .build()
             }.build()
 

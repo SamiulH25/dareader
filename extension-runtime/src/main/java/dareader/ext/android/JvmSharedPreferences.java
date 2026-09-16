@@ -138,9 +138,19 @@ public class JvmSharedPreferences implements SharedPreferences {
         private boolean clear = false;
 
         @Override
-        public Editor putString(String key, String value) { strings.put(key, value); return this; }
+        public Editor putString(String key, String value) {
+            // Android semantics: putting null removes the key.
+            if (value == null) return remove(key);
+            strings.put(key, value);
+            return this;
+        }
+
         @Override
-        public Editor putStringSet(String key, Set<String> values) { sets.put(key, new HashSet<>(values)); return this; }
+        public Editor putStringSet(String key, Set<String> values) {
+            if (values == null) return remove(key);
+            sets.put(key, new HashSet<>(values));
+            return this;
+        }
         @Override
         public Editor putInt(String key, int value) { ints.put(key, value); return this; }
         @Override
